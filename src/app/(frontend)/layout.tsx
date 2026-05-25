@@ -1,5 +1,6 @@
 import React from 'react'
 import './styles.css'
+import { TooltipProvider } from '@/components/ui/tooltip'
 
 export const metadata = {
   description: 'A blank template using Payload in a Next.js app.',
@@ -12,7 +13,9 @@ export default async function RootLayout(props: { children: React.ReactNode }) {
   return (
     <html lang="en">
       <body>
-        <main>{children}</main>
+        <main>
+          <TooltipProvider>{children}</TooltipProvider>
+        </main>
       </body>
     </html>
   )

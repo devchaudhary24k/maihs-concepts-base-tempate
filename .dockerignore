@@ -1,0 +1,28 @@
+# Installed fresh inside the image for correct linux binaries
+node_modules
+
+# Build outputs / local state (never bake; regenerated or per-container)
+.next
+.open-next
+.wrangler
+
+# VCS + editor
+.git
+.gitignore
+.vscode
+.idea
+
+# Secrets — never bake into the image (orchestrator injects at runtime)
+.env
+.env.*.local
+
+# Tests / reports
+coverage
+test-results
+playwright-report
+blob-report
+playwright/.cache
+
+# Docker
+Dockerfile
+.dockerignore
