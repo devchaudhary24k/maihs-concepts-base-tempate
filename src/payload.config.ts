@@ -10,14 +10,17 @@ import { r2Storage } from '@payloadcms/storage-r2'
 
 import { Users } from './collections/Users'
 import { Media } from './collections/Media'
-import migrations from './db/migrations'
+import { migrations } from './migrations'
 
 const filename = fileURLToPath(import.meta.url)
 const dirname = path.dirname(filename)
 const realpath = (value: string) => (fs.existsSync(value) ? fs.realpathSync(value) : undefined)
 
-const isCLI = process.argv.some((value) => realpath(value).endsWith(path.join('payload', 'bin.js')))
+const isCLI = process.argv.some((value) => realpath(value)?.endsWith(path.join('payload', 'bin.js')))
 const isProduction = process.env.NODE_ENV === 'production'
+// `next build` runs in this phase. During build we must use LOCAL wrangler bindings
+// (Miniflare) — remote bindings would require a Cloudflare login and break offline builds.
+const isBuild = process.env.NEXT_PHASE === 'phase-production-build'
 
 const createLog =
   (level: string, fn: typeof console.log) => (objOrMsg: object | string, msg?: string) => {
@@ -39,8 +42,10 @@ const cloudflareLogger = {
   silent: () => {},
 } as any // Use PayloadLogger type when it's exported
 
+// Use the local wrangler proxy for: the Payload CLI (migrations/seed), `next dev`,
+// and `next build`. Only the deployed Worker runtime uses the injected context.
 const cloudflare =
-  isCLI || !isProduction
+  isCLI || !isProduction || isBuild
     ? await getCloudflareContextFromWrangler()
     : await getCloudflareContext({ async: true })
 
@@ -59,6 +64,7 @@ export default buildConfig({
   },
   db: sqliteD1Adapter({
     binding: cloudflare.env.D1,
+    prodMigrations: migrations,
   }),
   logger: isProduction ? cloudflareLogger : undefined,
   plugins: [
@@ -75,7 +81,9 @@ function getCloudflareContextFromWrangler(): Promise<CloudflareContext> {
     ({ getPlatformProxy }) =>
       getPlatformProxy({
         environment: process.env.CLOUDFLARE_ENV,
-        remoteBindings: isProduction,
+        // Remote bindings only for the deploy-time CLI (e.g. `payload migrate` against
+        // real D1). Local dev and `next build` use the local Miniflare D1 file.
+        remoteBindings: isProduction && !isBuild,
       } satisfies GetPlatformProxyOptions),
   )
 }
