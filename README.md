@@ -20,6 +20,77 @@ After you click the `Deploy` button above, you'll want to have standalone copy o
 
 ### Local Development
 
+```bash
+pnpm install
+cp .env.example .env          # then set PAYLOAD_SECRET (see below)
+pnpm dev                      # http://localhost:3000  (admin at /admin)
+```
+
+Wrangler provides a **local D1 (SQLite) + R2** binding automatically — no Cloudflare
+login is needed for dev. The local D1 file lives at `.wrangler/state/...` and persists
+across restarts.
+
+The quality gate (kept green at all times):
+
+```bash
+pnpm lint && pnpm typecheck && pnpm build
+```
+
+## Environment variables
+
+Copy `.env.example` to `.env`. For local dev, **only `PAYLOAD_SECRET` is required**.
+
+### App variables (`process.env`)
+
+| Variable | Required | Description |
+| --- | --- | --- |
+| `PAYLOAD_SECRET` | **Yes** | Payload JWT/encryption secret. Generate with `openssl rand -hex 32`. |
+| `PAYLOAD_LOG_LEVEL` | No | `trace`\|`debug`\|`info`\|`warn`\|`error`\|`fatal`. Default `info`. |
+| `CLOUDFLARE_ENV` | No | Selects a wrangler environment (e.g. `staging`). Unset = default. |
+
+`NODE_ENV` and `NEXT_PHASE` are set automatically by the tooling — do not set them.
+
+### Cloudflare bindings (not env vars)
+
+Configured in `wrangler.jsonc`, injected by the Workers runtime (accessed via
+`cloudflare.env.D1` / `cloudflare.env.R2`). In dev they are mocked locally by Wrangler —
+no setup required. For production, see [Deployments](#deployments).
+
+| Binding | `wrangler.jsonc` field | Production action |
+| --- | --- | --- |
+| `D1` | `database_id` (placeholder `DATABASE_ID`) | Replace with id from `wrangler d1 create <name>`. |
+| `R2` | `bucket_name` | Create with `wrangler r2 bucket create <name>`. |
+| `ASSETS` | — | Managed by OpenNext. |
+
+### Deploy-only credentials
+
+Needed only for `wrangler deploy` / remote migrations (never committed):
+
+| Variable | Description |
+| --- | --- |
+| `CLOUDFLARE_ACCOUNT_ID` | Target Cloudflare account. |
+| `CLOUDFLARE_API_TOKEN` | API token. Scopes: Workers Scripts:Edit, D1:Edit, R2:Edit, Account:Read. |
+
+`PAYLOAD_SECRET` in production is stored as a Worker secret via `wrangler secret put PAYLOAD_SECRET`.
+
+## Docker (dev container)
+
+The `Dockerfile` builds a **dev-container image**: the repo + a warm `node_modules`,
+ready to run `next dev` with a local D1. It is **not** a production artifact — production
+runs on Cloudflare Workers.
+
+```bash
+docker build -t maihs-cms-template:dev .
+docker run --rm -p 3000:3000 \
+  -e PAYLOAD_SECRET=$(openssl rand -hex 32) \
+  -v maihs-d1:/app/.wrangler \
+  maihs-cms-template:dev
+```
+
+- `PAYLOAD_SECRET` is injected at runtime (never baked into the image; `.env` is in `.dockerignore`).
+- Mount a volume at `/app/.wrangler` to persist the local D1 across container restarts.
+- The default command starts the dev server on `0.0.0.0:3000`; override it (e.g. `docker run ... bash`) for other tasks — the base code is in the image regardless.
+
 ## How it works
 
 Out of the box, using [`Wrangler`](https://developers.cloudflare.com/workers/wrangler/) will automatically create local bindings for you to connect to the remote services and it can even create a local mock of the services you're using with Cloudflare.
@@ -79,6 +150,41 @@ pnpm run deploy
 This will spin up Wrangler in `production` mode, run any created migrations, build the app and then deploy the bundle up to Cloudflare.
 
 That's it! You can if you wish move these steps into your CI pipeline as well.
+
+## Continuous Integration (Docker image → GHCR)
+
+`.github/workflows/docker-publish.yml` builds the dev-container image and pushes it to
+the GitHub Container Registry (GHCR) on every push to `main` (i.e. after a PR is merged —
+it never runs on the PR itself).
+
+Published tags:
+
+```
+ghcr.io/<owner>/<repo>:latest
+ghcr.io/<owner>/<repo>:sha-<git-sha>
+```
+
+### GitHub setup required
+
+1. **Workflow permissions** — Repo (or Org) → *Settings → Actions → General → Workflow
+   permissions* → enable **Read and write permissions**. (The workflow also requests
+   `packages: write` explicitly.)
+2. **Org package policy** (org repos only) — *Org → Settings → Packages* → allow the
+   `GITHUB_TOKEN` / Actions to create & publish container packages.
+3. No secrets to add — authentication uses the built-in `GITHUB_TOKEN`.
+
+### After the first publish
+
+- The new package is **private** by default. To let machines pull anonymously:
+  *Package → Settings → Change visibility → Public*.
+- To pull privately instead, log in with a token that has `read:packages`:
+  ```bash
+  echo $GHCR_TOKEN | docker login ghcr.io -u <username> --password-stdin
+  ```
+- Pull the image (name is lowercase):
+  ```bash
+  docker pull ghcr.io/<owner>/<repo>:latest
+  ```
 
 ## Enabling logs
 
