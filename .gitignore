@@ -9,9 +9,6 @@
 /.idea/*
 !/.idea/runConfigurations
 
-# testing
-/coverage
-
 # next.js
 /.next/
 /out/
@@ -41,13 +38,6 @@ next-env.d.ts
 .env
 
 /media
-
-# Playwright
-node_modules/
-/test-results/
-/playwright-report/
-/blob-report/
-/playwright/.cache/
 
 # OpenNext
 .open-next
