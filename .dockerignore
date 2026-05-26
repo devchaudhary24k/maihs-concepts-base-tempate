@@ -16,13 +16,6 @@ node_modules
 .env
 .env.*.local
 
-# Tests / reports
-coverage
-test-results
-playwright-report
-blob-report
-playwright/.cache
-
 # Docker
 Dockerfile
 .dockerignore
