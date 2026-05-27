@@ -3,8 +3,11 @@
 // Runs as PID 1. Spawns `pnpm dev` as a child and exposes a typed RPC over a
 // single WebSocket on /ws. Token-gated via Sec-WebSocket-Protocol: bearer.<TOKEN>.
 //
-// Lifecycle: when the last WS client disconnects and GRACE_MS elapses, the
-// daemon SIGTERMs the child (escalates to SIGKILL after 5s) and exits, which
+// Lifecycle: the daemon starts in "boot" mode and waits for the first client
+// to connect (guarded by BOOT_TIMEOUT_MS so a never-connected container still
+// exits). Once the first client connects, the daemon enters "running" mode:
+// when the last WS client disconnects and GRACE_MS elapses, the daemon
+// SIGTERMs the child (escalates to SIGKILL after 5s) and exits, which
 // terminates the container. A reconnect within the grace window cancels the
 // shutdown.
 //
@@ -27,7 +30,8 @@ if (!AGENT_TOKEN || AGENT_TOKEN.length < 8) {
   console.error("[agent] AGENT_TOKEN env var is required (min 8 chars). Refusing to start.");
   process.exit(1);
 }
-const GRACE_MS = Number.parseInt(process.env.GRACE_MS ?? "60000", 10);
+const GRACE_MS = Number.parseInt(process.env.GRACE_MS ?? "300000", 10);
+const BOOT_TIMEOUT_MS = Number.parseInt(process.env.BOOT_TIMEOUT_MS ?? String(GRACE_MS), 10);
 const AGENT_PORT = Number.parseInt(process.env.AGENT_PORT ?? "4000", 10);
 const DEV_CMD = process.env.DEV_CMD ?? "pnpm exec next dev -H 0.0.0.0";
 const WORKSPACE = "/app";
@@ -144,15 +148,38 @@ child.stderr.on("data", (buf) => {
 const clients = new Set();
 const inFlight = new Map(); // id -> { abort, child? }
 let graceTimer = null;
+let bootTimer = null;
+let mode = "boot"; // "boot" | "running"
 let shuttingDown = false;
 
 function armGraceTimer() {
   if (graceTimer || shuttingDown) return;
+  if (mode !== "running") return;
   log(`no clients connected — arming grace timer (${GRACE_MS}ms)`);
   graceTimer = setTimeout(() => {
     graceTimer = null;
     shutdown("grace_expired");
   }, GRACE_MS);
+}
+
+function armBootTimer() {
+  if (bootTimer || shuttingDown) return;
+  log(`boot mode — waiting for first client (timeout ${BOOT_TIMEOUT_MS}ms)`);
+  bootTimer = setTimeout(() => {
+    bootTimer = null;
+    log("boot timeout — no client ever connected, shutting down");
+    shutdown("boot_timeout");
+  }, BOOT_TIMEOUT_MS);
+}
+
+function leaveBootMode() {
+  if (mode !== "boot") return;
+  if (bootTimer) {
+    clearTimeout(bootTimer);
+    bootTimer = null;
+  }
+  mode = "running";
+  log("first client connected — entering running mode");
 }
 
 function disarmGraceTimer() {
@@ -248,6 +275,7 @@ wss.on("connection", (ws, req) => {
   const id = randomUUID();
   const entry = { id, ws, ready: false };
   clients.add(entry);
+  leaveBootMode();
   disarmGraceTimer();
   log(`client connected id=${id} total=${clients.size}`);
 
@@ -380,9 +408,10 @@ wss.on("error", (err) => {
   log(`ws server error: ${err?.message ?? err}`);
 });
 
-// No clients yet — arm the grace timer at boot so the container doesn't sit
-// idle forever if nothing ever connects.
-armGraceTimer();
+// No clients yet — start in boot mode. The grace timer is only armed once the
+// first client has connected (running mode). BOOT_TIMEOUT_MS guards against
+// containers that nobody ever connects to.
+armBootTimer();
 
 // ---------------------------------------------------------------------------
 // Handlers
