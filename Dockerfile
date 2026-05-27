@@ -28,6 +28,8 @@ COPY . .
 
 # next dev listens here. The orchestrator reverse-proxies this into the preview UI.
 EXPOSE 3000
+# Agent daemon (WebSocket RPC) — orchestrator drives file ops, shell, ts/eslint here.
+EXPOSE 4000
 
 # Defaults overridable by the orchestrator. PAYLOAD_SECRET is injected at runtime
 # (never baked into this public image). Bind 0.0.0.0 so the proxy can reach the
@@ -35,4 +37,7 @@ EXPOSE 3000
 # to persist data across container restarts).
 ENV NODE_ENV=development \
     NODE_OPTIONS=--no-deprecation
-CMD ["pnpm", "exec", "next", "dev", "-H", "0.0.0.0"]
+# PID 1 is the agent daemon. It spawns `pnpm exec next dev -H 0.0.0.0` as a
+# child and exits when the last WS client has been gone for GRACE_MS, which
+# also terminates the container.
+CMD ["node", "/app/.agent/server.mjs"]
