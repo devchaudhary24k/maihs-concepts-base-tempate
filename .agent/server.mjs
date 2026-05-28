@@ -35,7 +35,9 @@ const BOOT_TIMEOUT_MS = Number.parseInt(process.env.BOOT_TIMEOUT_MS ?? String(GR
 const AGENT_PORT = Number.parseInt(process.env.AGENT_PORT ?? "4000", 10);
 const DEV_CMD = process.env.DEV_CMD ?? "pnpm exec next dev -H 0.0.0.0";
 const WORKSPACE = "/app";
-const READY_TIMEOUT_MS = 3000;
+const READY_TIMEOUT_MS = 30000;
+const WS_PING_MS = 25_000;
+const WATCH_DEBOUNCE_MS = 150;
 const HELLO_PROTO_VERSION = 1;
 const MAX_READ_SIZE = 2 * 1024 * 1024; // 2MB
 const DEFAULT_SHELL_TIMEOUT_MS = 60_000;
@@ -113,12 +115,8 @@ child.on("error", (err) => {
   log(`dev child error: ${err.message}`);
 });
 
-function broadcastLog(stream, data) {
-  const frame = JSON.stringify({
-    id: "_",
-    type: "event",
-    event: { kind: "log", payload: { stream, data } },
-  });
+function broadcastEvent(event) {
+  const frame = JSON.stringify({ id: "_", type: "event", event });
   for (const c of clients) {
     if (c.ws.readyState === 1 /* OPEN */) {
       try {
@@ -128,6 +126,10 @@ function broadcastLog(stream, data) {
       }
     }
   }
+}
+
+function broadcastLog(stream, data) {
+  broadcastEvent({ kind: "log", payload: { stream, data } });
 }
 
 child.stdout.on("data", (buf) => {
@@ -142,6 +144,52 @@ child.stderr.on("data", (buf) => {
 });
 
 // ---------------------------------------------------------------------------
+// File watcher (workspace source changes -> file_changed events)
+// ---------------------------------------------------------------------------
+
+const WATCH_DIR = path.join(WORKSPACE, "src");
+// rel -> kind ("rename" | "change"), drained on debounce flush.
+const watchPending = new Map();
+
+function isWatchSkipped(filename) {
+  if (!filename) return false;
+  for (const seg of filename.split(/[\\/]+/)) {
+    if (LIST_DIR_SKIP.has(seg)) return true;
+  }
+  return false;
+}
+
+function flushWatch() {
+  watchFlushTimer = null;
+  for (const [rel, kind] of watchPending) {
+    broadcastEvent({ kind: "file_changed", payload: { rel, kind } });
+  }
+  watchPending.clear();
+}
+
+function startWatcher() {
+  try {
+    watcher = fs.watch(WATCH_DIR, { recursive: true }, (eventType, filename) => {
+      if (!filename) return;
+      const name = filename.toString();
+      if (isWatchSkipped(name)) return;
+      const abs = path.resolve(WATCH_DIR, name);
+      const rel = path.relative(WORKSPACE, abs);
+      const kind = eventType === "rename" ? "rename" : "change";
+      watchPending.set(rel, kind);
+      if (!watchFlushTimer) watchFlushTimer = setTimeout(flushWatch, WATCH_DEBOUNCE_MS);
+    });
+    watcher.on("error", (err) => {
+      log(`file watcher error: ${err?.message ?? err}`);
+    });
+    log(`watching ${WATCH_DIR} for changes`);
+  } catch (err) {
+    log(`file watcher unavailable (${err?.message ?? err}) — skipping live file events`);
+    watcher = null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Client / grace-timer state
 // ---------------------------------------------------------------------------
 
@@ -149,6 +197,9 @@ const clients = new Set();
 const inFlight = new Map(); // id -> { abort, child? }
 let graceTimer = null;
 let bootTimer = null;
+let pingTimer = null;
+let watcher = null;
+let watchFlushTimer = null;
 let mode = "boot"; // "boot" | "running"
 let shuttingDown = false;
 
@@ -194,6 +245,25 @@ function shutdown(reason) {
   if (shuttingDown) return;
   shuttingDown = true;
   log(`shutting down: ${reason}`);
+
+  // Stop heartbeat + file watcher so the process can exit cleanly.
+  if (pingTimer) {
+    clearInterval(pingTimer);
+    pingTimer = null;
+  }
+  if (watchFlushTimer) {
+    clearTimeout(watchFlushTimer);
+    watchFlushTimer = null;
+  }
+  if (watcher) {
+    try {
+      watcher.close();
+    } catch {
+      // ignore
+    }
+    watcher = null;
+  }
+
   // Abort in-flight ops.
   for (const [, entry] of inFlight) {
     try {
@@ -273,7 +343,7 @@ wss.on("connection", (ws, req) => {
   }
 
   const id = randomUUID();
-  const entry = { id, ws, ready: false };
+  const entry = { id, ws, ready: false, isAlive: true };
   clients.add(entry);
   leaveBootMode();
   disarmGraceTimer();
@@ -402,11 +472,43 @@ wss.on("connection", (ws, req) => {
   ws.on("error", (err) => {
     log(`client id=${id} error: ${err?.message ?? err}`);
   });
+
+  ws.on("pong", () => {
+    entry.isAlive = true;
+  });
 });
 
 wss.on("error", (err) => {
   log(`ws server error: ${err?.message ?? err}`);
 });
+
+// Server-side WS heartbeat: ping every WS_PING_MS and reap sockets that did not
+// pong since the previous tick. An idle WS carries zero bytes, so an upstream
+// nginx proxy_read_timeout silently closes it; pinging keeps the link warm AND
+// detects half-open sockets so the grace logic is accurate. Browsers auto-pong
+// at the protocol level, so no client change is needed.
+pingTimer = setInterval(() => {
+  for (const entry of clients) {
+    if (entry.isAlive === false) {
+      try {
+        entry.ws.terminate();
+      } catch {
+        // ignore — close handler removes it from clients + arms grace timer
+      }
+      continue;
+    }
+    entry.isAlive = false;
+    try {
+      if (entry.ws.readyState === 1 /* OPEN */) entry.ws.ping();
+    } catch {
+      // ignore
+    }
+  }
+}, WS_PING_MS);
+
+// File watcher: emit file_changed events when files under /app/src change so the
+// dashboard's live Code tab can refresh. node on linux supports recursive watch.
+startWatcher();
 
 // No clients yet — start in boot mode. The grace timer is only armed once the
 // first client has connected (running mode). BOOT_TIMEOUT_MS guards against
