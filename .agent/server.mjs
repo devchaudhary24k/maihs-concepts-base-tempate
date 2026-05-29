@@ -133,15 +133,27 @@ function broadcastLog(stream, data) {
   broadcastEvent({ kind: "log", payload: { stream, data } });
 }
 
+// Surface structured build state by scanning the next-dev child's output, so the
+// host can sync re-probes to real recompiles instead of fixed sleeps.
+function detectBuildSignal(s) {
+  if (/Failed to compile|Unhandled Runtime Error|⨯/.test(s)) {
+    broadcastEvent({ kind: "build_error", payload: { text: s.slice(0, 4000) } });
+  } else if (/✓ Compiled|Compiled in|compiled successfully|✓ Ready|Ready in/.test(s)) {
+    broadcastEvent({ kind: "build_ok", payload: {} });
+  }
+}
+
 child.stdout.on("data", (buf) => {
   const s = buf.toString("utf8");
   process.stdout.write(s);
   broadcastLog("stdout", s);
+  detectBuildSignal(s);
 });
 child.stderr.on("data", (buf) => {
   const s = buf.toString("utf8");
   process.stderr.write(s);
   broadcastLog("stderr", s);
+  detectBuildSignal(s);
 });
 
 // ---------------------------------------------------------------------------
@@ -661,6 +673,10 @@ const handlers = {
       throw err;
     }
     await fsp.rm(abs, { recursive: Boolean(args.recursive), force: Boolean(args.force) });
+    // Evict from the warm TS language service so the diagnostics op stops
+    // type-checking a file that no longer exists on disk.
+    _tsRootFiles.delete(abs);
+    _tsFileVersions.delete(abs);
     return { path: abs };
   },
 
