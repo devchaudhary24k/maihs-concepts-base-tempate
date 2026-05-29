@@ -19,6 +19,7 @@ import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import ts from "typescript";
 import { WebSocketServer } from "ws";
 
 // ---------------------------------------------------------------------------
@@ -202,6 +203,40 @@ let watcher = null;
 let watchFlushTimer = null;
 let mode = "boot"; // "boot" | "running"
 let shuttingDown = false;
+
+// ---------------------------------------------------------------------------
+// Warm TS language service (fast per-file diagnostics)
+// ---------------------------------------------------------------------------
+
+let _tsLS = null;
+const _tsRootFiles = new Set();
+const _tsFileVersions = new Map();
+
+function getTsLanguageService() {
+  if (_tsLS) return _tsLS;
+  const configPath = path.join(WORKSPACE, "tsconfig.json");
+  const configFile = ts.readConfigFile(configPath, ts.sys.readFile);
+  const parsed = ts.parseJsonConfigFileContent(configFile.config ?? {}, ts.sys, WORKSPACE);
+  for (const f of parsed.fileNames) _tsRootFiles.add(f);
+  const host = {
+    getScriptFileNames: () => [..._tsRootFiles],
+    getScriptVersion: (f) => String(_tsFileVersions.get(f) ?? 0),
+    getScriptSnapshot: (f) => {
+      const text = ts.sys.readFile(f);
+      return text === undefined ? undefined : ts.ScriptSnapshot.fromString(text);
+    },
+    getCurrentDirectory: () => WORKSPACE,
+    getCompilationSettings: () => parsed.options,
+    getDefaultLibFileName: (o) => ts.getDefaultLibFilePath(o),
+    fileExists: ts.sys.fileExists,
+    readFile: ts.sys.readFile,
+    readDirectory: ts.sys.readDirectory,
+    directoryExists: ts.sys.directoryExists,
+    getDirectories: ts.sys.getDirectories,
+  };
+  _tsLS = ts.createLanguageService(host, ts.createDocumentRegistry());
+  return _tsLS;
+}
 
 function armGraceTimer() {
   if (graceTimer || shuttingDown) return;
@@ -682,6 +717,36 @@ const handlers = {
     });
     const diagnostics = parseEslintJson(res.stdout);
     return { exitCode: res.exitCode, diagnostics, stderr: res.stderr };
+  },
+
+  diagnostics: async (args) => {
+    const t0 = Date.now();
+    const rel = String(args.path || "");
+    if (!rel) return { diagnostics: [], durationMs: 0 };
+    const abs = safePath(rel); // jails to /app
+    _tsRootFiles.add(abs); // ensure newly-written file is known to the program
+    _tsFileVersions.set(abs, (_tsFileVersions.get(abs) ?? 0) + 1); // force re-read from disk
+    const ls = getTsLanguageService();
+    const raw = [...ls.getSyntacticDiagnostics(abs), ...ls.getSemanticDiagnostics(abs)];
+    const diagnostics = raw.map((d) => {
+      const file = d.file ? d.file.fileName : abs;
+      let line = 0;
+      let col = 0;
+      if (d.file && typeof d.start === "number") {
+        const lc = d.file.getLineAndCharacterOfPosition(d.start);
+        line = lc.line + 1;
+        col = lc.character + 1;
+      }
+      return {
+        file,
+        line,
+        col,
+        severity: d.category === ts.DiagnosticCategory.Error ? "error" : "warning",
+        code: "TS" + d.code,
+        message: ts.flattenDiagnosticMessageText(d.messageText, "\n"),
+      };
+    });
+    return { diagnostics, durationMs: Date.now() - t0 };
   },
 
   cancel: async (args) => {
