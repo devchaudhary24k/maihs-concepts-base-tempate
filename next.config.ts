@@ -2,6 +2,13 @@ import { withPayload } from '@payloadcms/next/withPayload'
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // Generated concept sites must not be blocked from deploying by lint rules
+  // (e.g. no-html-link-for-pages, no-unescaped-entities). Correctness is gated
+  // upstream by the codegen ts_check; `next build` should only fail on real type
+  // or compile errors, not style lint.
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
   images: {
     localPatterns: [
       {
