@@ -68,10 +68,19 @@ export default buildConfig({
   }),
   logger: isProduction ? cloudflareLogger : undefined,
   plugins: [
-    r2Storage({
-      bucket: cloudflare.env.R2,
-      collections: { media: true },
-    }),
+    // R2 is optional: when the worker is deployed without an R2 binding (the
+    // `wrangler.jsonc` `r2_buckets` entry stripped at deploy time), `cloudflare.env.R2`
+    // is undefined in every phase (next build, opennext build, worker runtime). Guard
+    // the storage plugin so a no-R2 deploy builds and boots — media uploads are then
+    // disabled, reads and the rest of the app are unaffected.
+    ...(cloudflare.env.R2
+      ? [
+          r2Storage({
+            bucket: cloudflare.env.R2,
+            collections: { media: true },
+          }),
+        ]
+      : []),
   ],
 })
 
