@@ -1,5 +1,6 @@
 import React from 'react'
 import './styles.css'
+import { AiBuilderCommentBridge } from '@/components/ai-builder-comment-bridge'
 import { TooltipProvider } from '@/components/ui/tooltip'
 
 export const metadata = {
@@ -15,6 +16,7 @@ export default async function RootLayout(props: { children: React.ReactNode }) {
       <body>
         <main>
           <TooltipProvider>{children}</TooltipProvider>
+          <AiBuilderCommentBridge />
         </main>
       </body>
     </html>
