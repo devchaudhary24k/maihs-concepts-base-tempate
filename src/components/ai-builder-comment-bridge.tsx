@@ -8,15 +8,9 @@ type CommentTarget = {
   text?: string
 }
 
-const ENABLE_MESSAGE_TYPES = new Set([
-  'ai-v2-comment-mode-on',
-  'ai-comment-mode-on',
-])
+const ENABLE_MESSAGE_TYPES = new Set(['ai-v2-comment-mode-on', 'ai-comment-mode-on'])
 
-const DISABLE_MESSAGE_TYPES = new Set([
-  'ai-v2-comment-mode-off',
-  'ai-comment-mode-off',
-])
+const DISABLE_MESSAGE_TYPES = new Set(['ai-v2-comment-mode-off', 'ai-comment-mode-off'])
 
 const IGNORED_TAGS = new Set(['HTML', 'BODY', 'SCRIPT', 'STYLE', 'NOSCRIPT'])
 
@@ -85,11 +79,13 @@ function findSelectableElement(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) return null
 
   const candidate = target.closest<HTMLElement>(
-    'button,a,h1,h2,h3,h4,p,span,img,li,article,section,header,footer,[data-section-slug],[role="button"],[role="link"]',
+    'button,a,h1,h2,h3,h4,p,span,img,li,article,div,main,aside,section,header,footer,[data-section-slug],[role="button"],[role="link"],[role="group"],[role="article"]',
   )
 
   if (!candidate || IGNORED_TAGS.has(candidate.tagName)) return null
   if (candidate.dataset.aiBuilderCommentBridge === 'true') return null
+  const rect = candidate.getBoundingClientRect()
+  if (rect.width < 4 || rect.height < 4) return null
 
   return candidate
 }
@@ -97,7 +93,10 @@ function findSelectableElement(target: EventTarget | null) {
 function createCommentTarget(element: HTMLElement): CommentTarget {
   const sectionRoot = element.closest<HTMLElement>('[data-section-slug]')
   const sectionSlug = sanitizeSelectorPart(sectionRoot?.dataset.sectionSlug, 'page')
-  const tagPath = sanitizeSelectorPart(getTagPath(element, sectionRoot), element.tagName.toLowerCase())
+  const tagPath = sanitizeSelectorPart(
+    getTagPath(element, sectionRoot),
+    element.tagName.toLowerCase(),
+  )
   const selector = `${sectionSlug}::${tagPath}::${getNthOfType(element)}`
   const text = normalizeText(element.innerText || element.getAttribute('alt') || '', 280)
 
