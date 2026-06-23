@@ -21,7 +21,8 @@
     "payload": "cross-env NODE_OPTIONS=--no-deprecation payload",
     "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview ${CLOUDFLARE_ENV:+--env=$CLOUDFLARE_ENV}",
     "start": "cross-env NODE_OPTIONS=--no-deprecation next start",
-    "typecheck": "cross-env NODE_OPTIONS=--no-deprecation tsc --noEmit"
+    "typecheck": "cross-env NODE_OPTIONS=--no-deprecation tsc --noEmit",
+    "validate:agent": "node --check .agent/server.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.5.0",
