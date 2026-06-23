@@ -82,14 +82,34 @@ runs on Cloudflare Workers.
 ```bash
 docker build -t maihs-cms-template:dev .
 docker run --rm -p 3000:3000 \
+  -p 4000:4000 \
+  -e AGENT_TOKEN=$(openssl rand -hex 32) \
   -e PAYLOAD_SECRET=$(openssl rand -hex 32) \
   -v maihs-d1:/app/.wrangler \
   maihs-cms-template:dev
 ```
 
 - `PAYLOAD_SECRET` is injected at runtime (never baked into the image; `.env` is in `.dockerignore`).
+- `AGENT_TOKEN` is required by the WebSocket daemon and is presented by clients via `Sec-WebSocket-Protocol: bearer.<token>`.
 - Mount a volume at `/app/.wrangler` to persist the local D1 across container restarts.
-- The default command starts the dev server on `0.0.0.0:3000`; override it (e.g. `docker run ... bash`) for other tasks — the base code is in the image regardless.
+- The default command starts the agent daemon as an unprivileged user. The daemon starts the dev server on `0.0.0.0:3000`, exposes WebSocket RPC on `/ws` at port `4000`, and reports container health when the agent port accepts connections.
+- Override the command only for local debugging. Runtime file state expected to persist should live under mounted volumes such as `/app/.wrangler`.
+
+### Docker image validation
+
+```bash
+pnpm validate:agent
+docker build -t maihs-cms-template:dev .
+docker run --rm -d --name maihs-template-smoke \
+  -p 3000:3000 \
+  -p 4000:4000 \
+  -e AGENT_TOKEN=$(openssl rand -hex 32) \
+  -e PAYLOAD_SECRET=$(openssl rand -hex 32) \
+  maihs-cms-template:dev
+docker exec maihs-template-smoke id
+docker inspect --format='{{json .State.Health}}' maihs-template-smoke
+docker rm -f maihs-template-smoke
+```
 
 ## How it works
 

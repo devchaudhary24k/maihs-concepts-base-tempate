@@ -41,11 +41,51 @@ const WS_PING_MS = 25_000;
 const WATCH_DEBOUNCE_MS = 150;
 const HELLO_PROTO_VERSION = 1;
 const MAX_READ_SIZE = 2 * 1024 * 1024; // 2MB
+const MAX_WS_MESSAGE_BYTES = Number.parseInt(process.env.MAX_WS_MESSAGE_BYTES ?? String(256 * 1024), 10);
+const MAX_STREAM_CHUNK_BYTES = Number.parseInt(process.env.MAX_STREAM_CHUNK_BYTES ?? String(64 * 1024), 10);
+const MAX_STREAM_BUFFER_BYTES = Number.parseInt(process.env.MAX_STREAM_BUFFER_BYTES ?? String(2 * 1024 * 1024), 10);
+const MAX_LOG_EVENT_BYTES = Number.parseInt(process.env.MAX_LOG_EVENT_BYTES ?? String(16 * 1024), 10);
+const MAX_LIST_ENTRIES = Number.parseInt(process.env.MAX_LIST_ENTRIES ?? "5000", 10);
 const DEFAULT_SHELL_TIMEOUT_MS = 60_000;
 const MAX_SHELL_TIMEOUT_MS = Number.parseInt(process.env.MAX_SHELL_TIMEOUT_MS ?? String(10 * 60_000), 10);
 const LIST_DIR_MAX_DEPTH = 8;
 const LIST_DIR_SKIP = new Set(["node_modules", ".next", ".open-next", ".wrangler"]);
 const SHELL_ALLOWLIST = new Set(["pnpm", "node", "npx", "tsc", "eslint", "git", "sh", "ls", "cat"]);
+const PROTECTED_ENV_KEYS = new Set(["AGENT_TOKEN"]);
+const ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const INCLUDE_ERROR_STACKS = process.env.AGENT_INCLUDE_ERROR_STACKS === "1";
+
+const CAPABILITIES = Object.freeze({
+  protocol: HELLO_PROTO_VERSION,
+  workspace: WORKSPACE,
+  ops: [
+    "ping",
+    "write_file",
+    "read_file",
+    "list_dir",
+    "delete_file",
+    "move_file",
+    "run_shell",
+    "ts_check",
+    "eslint",
+    "diagnostics",
+    "cancel",
+  ],
+  shell: {
+    allowlist: [...SHELL_ALLOWLIST].sort(),
+    defaultTimeoutMs: DEFAULT_SHELL_TIMEOUT_MS,
+    maxTimeoutMs: MAX_SHELL_TIMEOUT_MS,
+    maxOutputBytes: MAX_STREAM_BUFFER_BYTES,
+  },
+  limits: {
+    maxReadSize: MAX_READ_SIZE,
+    maxWsMessageBytes: MAX_WS_MESSAGE_BYTES,
+    maxStreamChunkBytes: MAX_STREAM_CHUNK_BYTES,
+    maxListEntries: MAX_LIST_ENTRIES,
+    listDirMaxDepth: LIST_DIR_MAX_DEPTH,
+    skippedDirs: [...LIST_DIR_SKIP].sort(),
+  },
+});
 
 function log(...args) {
   console.log("[agent]", ...args);
@@ -70,6 +110,32 @@ function safePath(p) {
   return abs;
 }
 
+function assertInsideWorkspace(abs, original = abs) {
+  if (!abs.startsWith(WORKSPACE + "/") && abs !== WORKSPACE) {
+    const err = new Error(`path outside ${WORKSPACE}: ${original}`);
+    err.code = "path_outside_workspace";
+    throw err;
+  }
+  return abs;
+}
+
+async function safeExistingPath(p) {
+  const abs = safePath(p);
+  const real = await fsp.realpath(abs);
+  return assertInsideWorkspace(real, p);
+}
+
+async function assertSafeWriteTarget(abs, original = abs) {
+  const parent = await fsp.realpath(path.dirname(abs));
+  assertInsideWorkspace(parent, original);
+  try {
+    const real = await fsp.realpath(abs);
+    assertInsideWorkspace(real, original);
+  } catch (err) {
+    if (err?.code !== "ENOENT") throw err;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Token gate
 // ---------------------------------------------------------------------------
@@ -92,6 +158,34 @@ function extractBearerProto(header) {
   return { proto, token: proto.slice("bearer.".length) };
 }
 
+function trimUtf8(input, maxBytes) {
+  const buf = Buffer.isBuffer(input) ? input : Buffer.from(String(input ?? ""), "utf8");
+  if (buf.length <= maxBytes) return { text: buf.toString("utf8"), truncated: false, bytes: buf.length };
+  return { text: buf.subarray(0, maxBytes).toString("utf8"), truncated: true, bytes: buf.length };
+}
+
+function sanitizeError(err) {
+  const code = typeof err?.code === "string" ? err.code : "handler_error";
+  const rawMessage = err?.message ?? String(err);
+  const message = trimUtf8(rawMessage, 2048).text || "operation failed";
+  const error = { code, message };
+  if (INCLUDE_ERROR_STACKS && err?.stack) error.stack = trimUtf8(err.stack, 4096).text;
+  return error;
+}
+
+function buildChildEnv(overrides = {}) {
+  const env = { ...process.env };
+  for (const key of PROTECTED_ENV_KEYS) delete env[key];
+  if (!overrides || typeof overrides !== "object" || Array.isArray(overrides)) return env;
+  for (const [key, value] of Object.entries(overrides)) {
+    if (!ENV_KEY_PATTERN.test(key) || PROTECTED_ENV_KEYS.has(key)) continue;
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      env[key] = String(value).slice(0, 8192);
+    }
+  }
+  return env;
+}
+
 // ---------------------------------------------------------------------------
 // Child dev server
 // ---------------------------------------------------------------------------
@@ -105,7 +199,7 @@ if (devParts.length === 0) {
 log(`spawning dev: ${DEV_CMD}`);
 const child = spawn(devParts[0], devParts.slice(1), {
   cwd: WORKSPACE,
-  env: { ...process.env },
+  env: buildChildEnv(),
   stdio: ["ignore", "pipe", "pipe"],
 });
 
@@ -130,7 +224,8 @@ function broadcastEvent(event) {
 }
 
 function broadcastLog(stream, data) {
-  broadcastEvent({ kind: "log", payload: { stream, data } });
+  const trimmed = trimUtf8(data, MAX_LOG_EVENT_BYTES);
+  broadcastEvent({ kind: "log", payload: { stream, data: trimmed.text, truncated: trimmed.truncated } });
 }
 
 // Surface structured build state by scanning the next-dev child's output, so the
@@ -398,7 +493,7 @@ wss.on("connection", (ws, req) => {
 
   // Send hello.
   try {
-    ws.send(JSON.stringify({ type: "hello", proto: HELLO_PROTO_VERSION }));
+    ws.send(JSON.stringify({ type: "hello", proto: HELLO_PROTO_VERSION, capabilities: CAPABILITIES }));
   } catch {
     // ignore
   }
@@ -416,6 +511,23 @@ wss.on("connection", (ws, req) => {
   }, READY_TIMEOUT_MS);
 
   ws.on("message", async (raw) => {
+    if (Buffer.byteLength(raw) > MAX_WS_MESSAGE_BYTES) {
+      try {
+        ws.send(
+          JSON.stringify({
+            id: "_",
+            type: "result",
+            ok: false,
+            error: { code: "message_too_large", message: `message exceeds ${MAX_WS_MESSAGE_BYTES} bytes` },
+          }),
+        );
+        ws.close(1009, "message_too_large");
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
     let msg;
     try {
       msg = JSON.parse(raw.toString("utf8"));
@@ -464,7 +576,7 @@ wss.on("connection", (ws, req) => {
             id: msg.id,
             type: "result",
             ok: false,
-            error: { code: "unknown_op", message: `unknown op: ${msg.op}` },
+            error: { code: "unknown_op", message: "unknown operation" },
           }),
         );
       } catch {
@@ -490,15 +602,13 @@ wss.on("connection", (ws, req) => {
         // ignore
       }
     } catch (err) {
-      const code = err?.code ?? "handler_error";
-      const message = err?.message ?? String(err);
       try {
         ws.send(
           JSON.stringify({
             id: msg.id,
             type: "result",
             ok: false,
-            error: { code, message, stack: err?.stack },
+            error: sanitizeError(err),
           }),
         );
       } catch {
@@ -594,6 +704,7 @@ const handlers = {
     }
 
     await fsp.mkdir(path.dirname(abs), { recursive: true });
+    await assertSafeWriteTarget(abs, args.path);
 
     if (mode === "create") {
       await fsp.writeFile(abs, body, { encoding: "utf8", flag: "wx" });
@@ -608,7 +719,7 @@ const handlers = {
   },
 
   read_file: async (args) => {
-    const abs = safePath(args.path);
+    const abs = await safeExistingPath(args.path);
     const stat = await fsp.stat(abs);
     if (!stat.isFile()) {
       const err = new Error(`not a file: ${args.path}`);
@@ -633,15 +744,25 @@ const handlers = {
   },
 
   list_dir: async (args) => {
-    const abs = safePath(args.path ?? ".");
+    const abs = await safeExistingPath(args.path ?? ".");
     const recursive = Boolean(args.recursive);
     const glob = typeof args.glob === "string" ? args.glob : null;
-    const regex = typeof args.regex === "string" ? new RegExp(args.regex) : null;
+    let regex = null;
+    if (typeof args.regex === "string") {
+      try {
+        regex = new RegExp(args.regex);
+      } catch {
+        const err = new Error("invalid regex");
+        err.code = "invalid_regex";
+        throw err;
+      }
+    }
     const entries = [];
 
     async function walk(dir, depth) {
       const dirents = await fsp.readdir(dir, { withFileTypes: true });
       for (const d of dirents) {
+        if (entries.length >= MAX_LIST_ENTRIES) return;
         if (LIST_DIR_SKIP.has(d.name)) continue;
         const full = path.join(dir, d.name);
         const rel = path.relative(WORKSPACE, full);
@@ -657,16 +778,17 @@ const handlers = {
         if (matches) entries.push(item);
         if (recursive && d.isDirectory() && depth < LIST_DIR_MAX_DEPTH) {
           await walk(full, depth + 1);
+          if (entries.length >= MAX_LIST_ENTRIES) return;
         }
       }
     }
 
     await walk(abs, 0);
-    return { path: abs, entries };
+    return { path: abs, entries, truncated: entries.length >= MAX_LIST_ENTRIES };
   },
 
   delete_file: async (args) => {
-    const abs = safePath(args.path);
+    const abs = await safeExistingPath(args.path);
     if (abs === WORKSPACE) {
       const err = new Error("refusing to delete workspace root");
       err.code = "refused_root_delete";
@@ -681,9 +803,10 @@ const handlers = {
   },
 
   move_file: async (args) => {
-    const from = safePath(args.from);
+    const from = await safeExistingPath(args.from);
     const to = safePath(args.to);
     await fsp.mkdir(path.dirname(to), { recursive: true });
+    await assertSafeWriteTarget(to, args.to);
     await fsp.rename(from, to);
     return { from, to };
   },
@@ -696,14 +819,13 @@ const handlers = {
       throw err;
     }
     const cmdArgs = Array.isArray(args.args) ? args.args.map(String) : [];
-    const cwd = args.cwd ? safePath(args.cwd) : WORKSPACE;
+    const cwd = args.cwd ? await safeExistingPath(args.cwd) : WORKSPACE;
     const timeoutMs = Math.min(
       Math.max(Number.parseInt(args.timeoutMs ?? DEFAULT_SHELL_TIMEOUT_MS, 10), 1000),
       MAX_SHELL_TIMEOUT_MS,
     );
-    const env = { ...process.env, ...(args.env && typeof args.env === "object" ? args.env : {}) };
 
-    return await runStreaming({ cmd, args: cmdArgs, cwd, env, timeoutMs, ctx });
+    return await runStreaming({ cmd, args: cmdArgs, cwd, env: buildChildEnv(args.env), timeoutMs, ctx });
   },
 
   ts_check: async (args, ctx) => {
@@ -711,7 +833,7 @@ const handlers = {
       cmd: "pnpm",
       args: ["exec", "tsc", "--noEmit"],
       cwd: WORKSPACE,
-      env: process.env,
+      env: buildChildEnv(),
       timeoutMs: MAX_SHELL_TIMEOUT_MS,
       ctx,
     });
@@ -727,7 +849,7 @@ const handlers = {
       cmd: "pnpm",
       args: cmdArgs,
       cwd: WORKSPACE,
-      env: process.env,
+      env: buildChildEnv(),
       timeoutMs: MAX_SHELL_TIMEOUT_MS,
       ctx,
     });
@@ -805,6 +927,10 @@ function runStreaming({ cmd, args, cwd, env, timeoutMs, ctx }) {
 
     let stdout = "";
     let stderr = "";
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let stdoutTruncated = false;
+    let stderrTruncated = false;
     let killed = false;
 
     const t = setTimeout(() => {
@@ -836,14 +962,30 @@ function runStreaming({ cmd, args, cwd, env, timeoutMs, ctx }) {
     ctx.abort.signal.addEventListener("abort", onAbort, { once: true });
 
     cp.stdout?.on("data", (buf) => {
-      const data = buf.toString("utf8");
-      stdout += data;
-      ctx.sendStream({ stream: "stdout", data });
+      const chunk = trimUtf8(buf, MAX_STREAM_CHUNK_BYTES);
+      if (stdoutBytes < MAX_STREAM_BUFFER_BYTES) {
+        const remaining = MAX_STREAM_BUFFER_BYTES - stdoutBytes;
+        const stored = trimUtf8(buf, remaining);
+        stdout += stored.text;
+        stdoutBytes += Math.min(buf.length, remaining);
+        stdoutTruncated = stdoutTruncated || stored.truncated;
+      } else {
+        stdoutTruncated = true;
+      }
+      ctx.sendStream({ stream: "stdout", data: chunk.text, truncated: chunk.truncated || stdoutTruncated });
     });
     cp.stderr?.on("data", (buf) => {
-      const data = buf.toString("utf8");
-      stderr += data;
-      ctx.sendStream({ stream: "stderr", data });
+      const chunk = trimUtf8(buf, MAX_STREAM_CHUNK_BYTES);
+      if (stderrBytes < MAX_STREAM_BUFFER_BYTES) {
+        const remaining = MAX_STREAM_BUFFER_BYTES - stderrBytes;
+        const stored = trimUtf8(buf, remaining);
+        stderr += stored.text;
+        stderrBytes += Math.min(buf.length, remaining);
+        stderrTruncated = stderrTruncated || stored.truncated;
+      } else {
+        stderrTruncated = true;
+      }
+      ctx.sendStream({ stream: "stderr", data: chunk.text, truncated: chunk.truncated || stderrTruncated });
     });
     cp.on("error", (err) => {
       clearTimeout(t);
@@ -865,7 +1007,13 @@ function runStreaming({ cmd, args, cwd, env, timeoutMs, ctx }) {
         reject(err);
         return;
       }
-      resolve({ exitCode: code ?? null, signal: signal ?? null, stdout, stderr });
+      resolve({
+        exitCode: code ?? null,
+        signal: signal ?? null,
+        stdout,
+        stderr,
+        truncated: { stdout: stdoutTruncated, stderr: stderrTruncated },
+      });
     });
   });
 }
