@@ -6,7 +6,7 @@
   "type": "module",
   "packageManager": "pnpm@10.33.0",
   "scripts": {
-    "build": "cross-env NODE_OPTIONS=\"--no-deprecation --max-old-space-size=8000\" next build",
+    "build": "cross-env NODE_OPTIONS=\"--no-deprecation --max-old-space-size=4096\" next build",
     "deploy": "pnpm run deploy:database && pnpm run deploy:app",
     "deploy:app": "opennextjs-cloudflare build ${CLOUDFLARE_ENV:+--env=$CLOUDFLARE_ENV} && opennextjs-cloudflare deploy ${CLOUDFLARE_ENV:+--env=$CLOUDFLARE_ENV}",
     "deploy:database": "cross-env NODE_ENV=production PAYLOAD_SECRET=ignore payload migrate && wrangler d1 execute D1 --command 'PRAGMA optimize' ${CLOUDFLARE_ENV:+--env=$CLOUDFLARE_ENV} --remote",
