@@ -51,3 +51,23 @@ jobs:
           # GitHub Actions layer cache to speed up rebuilds
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Extract import runtime metadata
+        id: import-meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=import-runtime
+            type=sha,prefix=import-runtime-,format=long
+
+      - name: Build and push import runtime
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: import-runtime
+          push: true
+          tags: ${{ steps.import-meta.outputs.tags }}
+          labels: ${{ steps.import-meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
