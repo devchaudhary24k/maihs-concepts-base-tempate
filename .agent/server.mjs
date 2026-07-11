@@ -50,7 +50,7 @@ const DEFAULT_SHELL_TIMEOUT_MS = 60_000;
 const MAX_SHELL_TIMEOUT_MS = Number.parseInt(process.env.MAX_SHELL_TIMEOUT_MS ?? String(10 * 60_000), 10);
 const LIST_DIR_MAX_DEPTH = 8;
 const LIST_DIR_SKIP = new Set(["node_modules", ".next", ".open-next", ".wrangler"]);
-const SHELL_ALLOWLIST = new Set(["pnpm", "node", "npx", "python3", "tsc", "eslint", "git", "sh", "ls", "cat"]);
+const SHELL_ALLOWLIST = new Set(["pnpm", "node", "npx", "tsc", "eslint", "git", "sh", "ls", "cat"]);
 const PROTECTED_ENV_KEYS = new Set(["AGENT_TOKEN"]);
 const ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const INCLUDE_ERROR_STACKS = process.env.AGENT_INCLUDE_ERROR_STACKS === "1";

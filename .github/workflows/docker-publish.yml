@@ -65,7 +65,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          target: import-runtime
+          file: Dockerfile.import
           push: true
           tags: ${{ steps.import-meta.outputs.tags }}
           labels: ${{ steps.import-meta.outputs.labels }}
