@@ -349,6 +349,7 @@ function getTsLanguageService() {
     readDirectory: ts.sys.readDirectory,
     directoryExists: ts.sys.directoryExists,
     getDirectories: ts.sys.getDirectories,
+    realpath: ts.sys.realpath,
   };
   _tsLS = ts.createLanguageService(host, ts.createDocumentRegistry());
   return _tsLS;
