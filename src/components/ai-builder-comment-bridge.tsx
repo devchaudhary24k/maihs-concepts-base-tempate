@@ -12,12 +12,22 @@ const ENABLE_MESSAGE_TYPES = new Set(['ai-v2-comment-mode-on', 'ai-comment-mode-
 
 const DISABLE_MESSAGE_TYPES = new Set(['ai-v2-comment-mode-off', 'ai-comment-mode-off'])
 
-const IGNORED_TAGS = new Set(['HTML', 'BODY', 'SCRIPT', 'STYLE', 'NOSCRIPT'])
+const IGNORED_TAGS = new Set([
+  'HTML',
+  'BODY',
+  'SCRIPT',
+  'STYLE',
+  'NOSCRIPT',
+  'TEMPLATE',
+  'META',
+  'LINK',
+])
+const MIN_TARGET_AREA = 16
 
 function normalizeText(value: string, maxLength: number) {
   const normalized = value.replace(/\s+/g, ' ').trim()
   if (normalized.length <= maxLength) return normalized
-  return `${normalized.slice(0, maxLength - 1)}…`
+  return normalized.slice(0, maxLength - 3) + '...'
 }
 
 function sanitizeSelectorPart(value: string | null | undefined, fallback: string) {
@@ -43,14 +53,14 @@ function getNthOfType(element: Element) {
 
 function getSegment(element: Element) {
   const tagName = element.tagName.toLowerCase()
-  const id = element.id ? `#${sanitizeSelectorPart(element.id, 'id')}` : ''
+  const id = element.id ? '#' + sanitizeSelectorPart(element.id, 'id') : ''
   const className = Array.from(element.classList)
     .filter((item) => !item.startsWith('__ai-builder'))
     .slice(0, 2)
-    .map((item) => `.${sanitizeSelectorPart(item, 'class')}`)
+    .map((item) => '.' + sanitizeSelectorPart(item, 'class'))
     .join('')
 
-  return `${tagName}${id}${className}:nth-of-type(${getNthOfType(element)})`
+  return tagName + id + className + ':nth-of-type(' + getNthOfType(element) + ')'
 }
 
 function getTagPath(element: Element, sectionRoot: Element | null) {
@@ -67,27 +77,58 @@ function getTagPath(element: Element, sectionRoot: Element | null) {
 
 function getElementSnippet(element: HTMLElement) {
   if (element instanceof HTMLImageElement) {
-    const alt = element.alt ? ` alt="${normalizeText(element.alt, 120)}"` : ''
+    const alt = element.alt ? ' alt="' + normalizeText(element.alt, 120) + '"' : ''
     const src = element.currentSrc || element.src
-    return `<img${alt} src="${normalizeText(src, 220)}">`
+    return '<img' + alt + ' src="' + normalizeText(src, 220) + '">'
   }
 
   return normalizeText(element.outerHTML, 700)
 }
 
-function findSelectableElement(target: EventTarget | null) {
-  if (!(target instanceof HTMLElement)) return null
+function elementFromTarget(target: EventTarget | null): Element | null {
+  if (target instanceof Element) return target
+  if (target instanceof Node && target.parentNode instanceof Element) return target.parentNode
+  return null
+}
 
-  const candidate = target.closest<HTMLElement>(
-    'button,a,h1,h2,h3,h4,p,span,img,li,article,div,main,aside,section,header,footer,[data-section-slug],[role="button"],[role="link"],[role="group"],[role="article"]',
-  )
+function nearestHTMLElement(element: Element | null): HTMLElement | null {
+  let current: Element | null = element
+  while (current && !(current instanceof HTMLElement)) current = current.parentElement
+  return current instanceof HTMLElement ? current : null
+}
 
-  if (!candidate || IGNORED_TAGS.has(candidate.tagName)) return null
-  if (candidate.dataset.aiBuilderCommentBridge === 'true') return null
-  const rect = candidate.getBoundingClientRect()
-  if (rect.width < 4 || rect.height < 4) return null
+function isBridgeElement(element: HTMLElement) {
+  return Boolean(element.closest('[data-ai-builder-comment-bridge="true"]'))
+}
 
-  return candidate
+function isSelectableCandidate(element: HTMLElement) {
+  if (IGNORED_TAGS.has(element.tagName)) return false
+  if (isBridgeElement(element)) return false
+
+  const rect = element.getBoundingClientRect()
+  if (rect.width < 2 || rect.height < 2 || rect.width * rect.height < MIN_TARGET_AREA) return false
+
+  const style = window.getComputedStyle(element)
+  if (style.display === 'none' || style.visibility === 'hidden') return false
+  if (Number(style.opacity) === 0) return false
+
+  return true
+}
+
+function findSelectableElement(target: EventTarget | Element | null) {
+  let current = nearestHTMLElement(elementFromTarget(target))
+
+  while (current && current !== document.body && current !== document.documentElement) {
+    if (isSelectableCandidate(current)) return current
+    current = current.parentElement
+  }
+
+  return null
+}
+
+function findSelectableElementAtPoint(event: MouseEvent | PointerEvent) {
+  const hit = document.elementFromPoint(event.clientX, event.clientY)
+  return findSelectableElement(hit || event.target)
 }
 
 function createCommentTarget(element: HTMLElement): CommentTarget {
@@ -97,8 +138,11 @@ function createCommentTarget(element: HTMLElement): CommentTarget {
     getTagPath(element, sectionRoot),
     element.tagName.toLowerCase(),
   )
-  const selector = `${sectionSlug}::${tagPath}::${getNthOfType(element)}`
-  const text = normalizeText(element.innerText || element.getAttribute('alt') || '', 280)
+  const selector = sectionSlug + '::' + tagPath + '::' + getNthOfType(element)
+  const text = normalizeText(
+    element.innerText || element.getAttribute('aria-label') || element.getAttribute('alt') || '',
+    280,
+  )
 
   return {
     selector,
@@ -116,10 +160,10 @@ function updateOverlay(overlay: HTMLDivElement, element: HTMLElement | null) {
   const rect = element.getBoundingClientRect()
 
   overlay.style.display = 'block'
-  overlay.style.left = `${Math.max(0, rect.left)}px`
-  overlay.style.top = `${Math.max(0, rect.top)}px`
-  overlay.style.width = `${Math.max(0, rect.width)}px`
-  overlay.style.height = `${Math.max(0, rect.height)}px`
+  overlay.style.left = Math.max(0, rect.left) + 'px'
+  overlay.style.top = Math.max(0, rect.top) + 'px'
+  overlay.style.width = Math.max(0, rect.width) + 'px'
+  overlay.style.height = Math.max(0, rect.height) + 'px'
 }
 
 export function AiBuilderCommentBridge(): null {
@@ -185,28 +229,27 @@ export function AiBuilderCommentBridge(): null {
     overlayRef.current = overlay
     document.documentElement.style.cursor = 'crosshair'
 
-    function onPointerOver(event: PointerEvent) {
-      const element = findSelectableElement(event.target)
+    function updateHoveredElement(element: HTMLElement | null) {
       hoveredElementRef.current = element
       updateOverlay(overlay, element)
     }
 
-    function onPointerMove() {
-      updateOverlay(overlay, hoveredElementRef.current)
+    function onPointerMove(event: PointerEvent) {
+      updateHoveredElement(findSelectableElementAtPoint(event))
     }
 
     function onPointerOut(event: PointerEvent) {
       const relatedTarget = event.relatedTarget
-      if (relatedTarget instanceof Node && hoveredElementRef.current?.contains(relatedTarget)) {
-        return
-      }
+      if (relatedTarget instanceof Node && document.contains(relatedTarget)) return
+      updateHoveredElement(null)
+    }
 
-      hoveredElementRef.current = null
-      updateOverlay(overlay, null)
+    function onViewportChange() {
+      updateOverlay(overlay, hoveredElementRef.current)
     }
 
     function onClick(event: MouseEvent) {
-      const element = findSelectableElement(event.target)
+      const element = findSelectableElementAtPoint(event)
       if (!element) return
 
       event.preventDefault()
@@ -222,16 +265,20 @@ export function AiBuilderCommentBridge(): null {
       )
     }
 
-    document.addEventListener('pointerover', onPointerOver, true)
     document.addEventListener('pointermove', onPointerMove, true)
+    document.addEventListener('pointerover', onPointerMove, true)
     document.addEventListener('pointerout', onPointerOut, true)
     document.addEventListener('click', onClick, true)
+    window.addEventListener('scroll', onViewportChange, true)
+    window.addEventListener('resize', onViewportChange)
 
     return () => {
-      document.removeEventListener('pointerover', onPointerOver, true)
       document.removeEventListener('pointermove', onPointerMove, true)
+      document.removeEventListener('pointerover', onPointerMove, true)
       document.removeEventListener('pointerout', onPointerOut, true)
       document.removeEventListener('click', onClick, true)
+      window.removeEventListener('scroll', onViewportChange, true)
+      window.removeEventListener('resize', onViewportChange)
       hoveredElementRef.current = null
       overlay.remove()
       overlayRef.current = null
