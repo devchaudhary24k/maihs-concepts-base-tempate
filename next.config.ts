@@ -9,12 +9,14 @@ const nextConfig = {
   eslint: {
     ignoreDuringBuilds: true,
   },
+  // Concept images come from sources we cannot allowlist before a build runs:
+  // files the builder writes into /public, generated images on our bucket, and
+  // the client's own assets. The previous localPatterns entry admitted only
+  // Payload's media route, so every other next/image src returned 400 from
+  // /_next/image while the page still rendered 200. Keeping optimization would
+  // need a wildcard remotePatterns, which is an open image proxy.
   images: {
-    localPatterns: [
-      {
-        pathname: '/api/media/file/**',
-      },
-    ],
+    unoptimized: true,
   },
   // Packages with Cloudflare Workers (workerd) specific code
   // Read more: https://opennext.js.org/cloudflare/howtos/workerd
