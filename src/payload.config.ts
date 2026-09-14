@@ -93,6 +93,17 @@ function getCloudflareContextFromWrangler(): Promise<CloudflareContext> {
         // Remote bindings only for the deploy-time CLI (e.g. `payload migrate` against
         // real D1). Local dev and `next build` use the local Miniflare D1 file.
         remoteBindings: isProduction && !isBuild,
+        // `next build` collects page data in parallel worker processes. Each one
+        // imports this file and starts its own Miniflare, and they all default to the
+        // same relative `.wrangler/state/v3`. workerd aborts the whole runtime on
+        // SQLITE_BUSY instead of waiting for the lock, so the build dies with
+        // "Failed to collect page data for /admin/[[...segments]]". Which workers open
+        // the database at the same moment decides whether a given build survives.
+        // Build-time D1 is an empty throwaway. The deploy workspace is a fresh
+        // `git archive` with no `.wrangler`, and the real database is remote D1,
+        // migrated separately by `deploy:database`. Nothing reads it, so keep it in
+        // memory and give every worker its own.
+        persist: isBuild ? false : undefined,
       } satisfies GetPlatformProxyOptions),
   )
 }
