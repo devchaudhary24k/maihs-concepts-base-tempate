@@ -18,6 +18,14 @@ const nextConfig = {
   images: {
     unoptimized: true,
   },
+  // Next sizes its build worker pool from `os.cpus().length`, which reports the
+  // Docker host's cores. The container's CPU quota (1.5) and memory cap (4 GiB)
+  // are invisible to it, so on a big host the build forks a worker per core, each
+  // one allowed the 4 GiB heap that `build` asks for, all fighting over one and a
+  // half CPUs. Two is closer to what a concept container actually gets.
+  experimental: {
+    cpus: 2,
+  },
   // Packages with Cloudflare Workers (workerd) specific code
   // Read more: https://opennext.js.org/cloudflare/howtos/workerd
   serverExternalPackages: ['jose', 'pg-cloudflare'],
