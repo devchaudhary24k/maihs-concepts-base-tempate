@@ -71,3 +71,23 @@ jobs:
           labels: ${{ steps.import-meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Extract plain template metadata
+        id: plain-meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=plain
+            type=sha,prefix=plain-,format=long
+
+      - name: Build and push plain template
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.plain
+          push: true
+          tags: ${{ steps.plain-meta.outputs.tags }}
+          labels: ${{ steps.plain-meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
