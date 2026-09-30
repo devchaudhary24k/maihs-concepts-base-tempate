@@ -1,0 +1,8 @@
+{
+  "template": "plain-next",
+  "templateVersion": 1,
+  "dashboard": false,
+  "database": false,
+  "storage": false,
+  "crons": false
+}

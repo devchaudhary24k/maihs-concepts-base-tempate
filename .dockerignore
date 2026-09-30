@@ -19,3 +19,14 @@ node_modules
 # Docker
 Dockerfile*
 .dockerignore
+
+**/node_modules
+**/.next
+**/.open-next
+**/.wrangler
+**/.env
+**/.env.*.local
+**/Dockerfile
+**/*.tsbuildinfo
+**/.pnpm-store
+**/.vscode

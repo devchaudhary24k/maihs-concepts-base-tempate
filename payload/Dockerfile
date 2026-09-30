@@ -33,12 +33,13 @@ RUN mkdir -p /app /home/concept/.local/share/pnpm \
 
 # Install dependencies first so this layer is cached unless the lockfile changes.
 # node_modules is built inside the image (correct linux binaries) — not copied.
-COPY --chown=concept:concept package.json pnpm-lock.yaml .npmrc ./
+COPY --chown=concept:concept payload/package.json payload/pnpm-lock.yaml payload/.npmrc ./
 USER concept
 RUN pnpm install --frozen-lockfile
 
-# Copy the rest of the repo (see .dockerignore for exclusions).
-COPY --chown=concept:concept . .
+# Copy the rest of the template and the shared agent daemon (see .dockerignore for exclusions).
+COPY --chown=concept:concept payload/ .
+COPY --chown=concept:concept .agent/ .agent/
 RUN mkdir -p /app/.next /app/.wrangler /app/.open-next
 
 # next dev listens here. The orchestrator reverse-proxies this into the preview UI.

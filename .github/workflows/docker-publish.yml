@@ -39,12 +39,14 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=latest
+            type=raw,value=payload
             type=sha,format=long
 
       - name: Build and push image
         uses: docker/build-push-action@v6
         with:
           context: .
+          file: payload/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -65,9 +67,29 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile.import
+          file: import/Dockerfile
           push: true
           tags: ${{ steps.import-meta.outputs.tags }}
           labels: ${{ steps.import-meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Extract plain template metadata
+        id: plain-meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=plain
+            type=sha,prefix=plain-,format=long
+
+      - name: Build and push plain template
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: plain/Dockerfile
+          push: true
+          tags: ${{ steps.plain-meta.outputs.tags }}
+          labels: ${{ steps.plain-meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
